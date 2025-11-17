@@ -976,3 +976,227 @@ app.get('/api/approvals/pending', async (req, res) => {
         res.json([...equipment, ...licenses]);
     } catch (err) {
         res.status(500).json({ message: "Database error", error: err });
+    }
+});
+
+app.post('/api/approvals/approve', isAdmin, async (req, res) => {
+    const { type, id, username } = req.body;
+    const table = type === 'equipment' ? 'equipment' : 'licenses';
+    try {
+        await db.promise().query(`UPDATE ${table} SET approval_status = 'approved' WHERE id = ?`, [id]);
+        logAction(username, 'UPDATE', type.toUpperCase(), id, 'Approved item');
+        res.status(204).send();
+    } catch (err) {
+        res.status(500).json({ message: "Database error", error: err });
+    }
+});
+
+app.post('/api/approvals/reject', isAdmin, async (req, res) => {
+    const { type, id, username, reason } = req.body;
+    const table = type === 'equipment' ? 'equipment' : 'licenses';
+    try {
+        await db.promise().query(`UPDATE ${table} SET approval_status = 'rejected', rejection_reason = ? WHERE id = ?`, [reason, id]);
+        logAction(username, 'UPDATE', type.toUpperCase(), id, `Rejected item. Reason: ${reason}`);
+        res.status(204).send();
+    } catch (err) {
+        res.status(500).json({ message: "Database error", error: err });
+    }
+});
+
+// --- 2FA ---
+app.post('/api/generate-2fa', (req, res) => {
+    const { userId } = req.body;
+    db.query('SELECT username, email FROM users WHERE id = ?', [userId], (err, results) => {
+        if (err || results.length === 0) return res.status(404).json({ message: 'Usuário não encontrado.' });
+        const user = results[0];
+        const secret = authenticator.generateSecret();
+        db.query('UPDATE users SET twoFASecret = ? WHERE id = ?', [secret, userId], (updateErr) => {
+            if (updateErr) return res.status(500).json({ message: 'Falha ao salvar o segredo 2FA.' });
+            const otpauth = authenticator.keyuri(user.email, 'Inventario Pro', secret);
+            res.json({ secret, qrCodeUrl: otpauth });
+        });
+    });
+});
+
+app.post('/api/enable-2fa', (req, res) => {
+    const { userId, token } = req.body;
+    db.query('SELECT twoFASecret FROM users WHERE id = ?', [userId], (err, results) => {
+        if (err || results.length === 0) return res.status(404).json({ message: 'Usuário não encontrado.' });
+        const { twoFASecret } = results[0];
+        const isValid = authenticator.check(token, twoFASecret);
+        if (isValid) {
+            db.query('UPDATE users SET is2FAEnabled = TRUE WHERE id = ?', [userId], (updateErr) => {
+                if (updateErr) return res.status(500).json({ message: 'Falha ao ativar o 2FA.' });
+                logAction(req.body.username || 'System', '2FA_ENABLE', 'USER', userId, '2FA enabled for user.');
+                res.status(204).send();
+            });
+        } else {
+            res.status(400).json({ message: 'Código de verificação inválido.' });
+        }
+    });
+});
+
+app.post('/api/disable-2fa', (req, res) => {
+    // This endpoint should be protected and only accessible by the logged-in user
+    const { userId } = req.body; // In a real app, get this from a session/token
+    db.query('UPDATE users SET is2FAEnabled = FALSE, twoFASecret = NULL WHERE id = ?', [userId], (err) => {
+        if (err) return res.status(500).json({ message: 'Falha ao desativar o 2FA.' });
+        logAction(req.body.username || 'System', '2FA_DISABLE', 'USER', userId, 'User disabled their own 2FA.');
+        res.status(204).send();
+    });
+});
+
+app.post('/api/disable-user-2fa', (req, res) => {
+    // Admin only endpoint to disable 2FA for another user
+    const { userId } = req.body;
+    db.query('UPDATE users SET is2FAEnabled = FALSE, twoFASecret = NULL WHERE id = ?', [userId], (err) => {
+        if (err) return res.status(500).json({ message: 'Falha ao desativar o 2FA.' });
+        logAction(req.body.username || 'Admin', '2FA_DISABLE', 'USER', userId, 'Admin disabled 2FA for user.');
+        res.status(204).send();
+    });
+});
+
+// --- SETTINGS ---
+app.get('/api/settings', async (req, res) => {
+    try {
+        const [rows] = await db.promise().query("SELECT config_key, config_value FROM app_config");
+        const settings = rows.reduce((acc, row) => {
+            try {
+                // Try parsing JSON, but fall back to string if it fails
+                acc[row.config_key] = JSON.parse(row.config_value);
+            } catch (e) {
+                // Handle booleans stored as strings and other non-JSON values
+                 if (row.config_value === 'true') acc[row.config_key] = true;
+                 else if (row.config_value === 'false') acc[row.config_key] = false;
+                 else acc[row.config_key] = row.config_value;
+            }
+            return acc;
+        }, {});
+        res.json(settings);
+    } catch (err) {
+        res.status(500).json({ message: "Database error", error: err });
+    }
+});
+
+app.post('/api/settings', isAdmin, async (req, res) => {
+    const { settings, username } = req.body;
+    const connection = await db.promise().getConnection();
+    try {
+        await connection.beginTransaction();
+        for (const [key, value] of Object.entries(settings)) {
+            const finalValue = (typeof value === 'object' || Array.isArray(value)) ? JSON.stringify(value) : String(value);
+            await connection.query(
+                "INSERT INTO app_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = ?",
+                [key, finalValue, finalValue]
+            );
+        }
+        await connection.commit();
+        logAction(username, 'UPDATE', 'SETTINGS', 'ALL', `Updated application settings.`);
+        res.json({ success: true, message: 'Configurações salvas com sucesso.' });
+    } catch (err) {
+        await connection.rollback();
+        res.status(500).json({ success: false, message: `Erro de banco de dados: ${err.message}` });
+    } finally {
+        connection.release();
+    }
+});
+
+// --- DATABASE MGMT ---
+app.get('/api/database/backup-status', isAdmin, (req, res) => {
+    const backupFile = path.join(BACKUP_DIR, 'backup.sql.gz');
+    if (fs.existsSync(backupFile)) {
+        const stats = fs.statSync(backupFile);
+        res.json({ hasBackup: true, backupTimestamp: stats.mtime.toISOString() });
+    } else {
+        res.json({ hasBackup: false });
+    }
+});
+
+app.post('/api/database/backup', isAdmin, (req, res) => {
+    const { username } = req.body;
+    const backupFile = path.join(BACKUP_DIR, 'backup.sql.gz');
+    const command = `mysqldump -h ${DB_HOST} -u ${DB_USER} -p'${DB_PASSWORD}' ${DB_DATABASE} | gzip > ${backupFile}`;
+
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Backup failed: ${error}`);
+            return res.status(500).json({ success: false, message: `Erro ao executar mysqldump: ${stderr}` });
+        }
+        logAction(username, 'BACKUP', 'DATABASE', null, 'Database backup created successfully.');
+        res.json({ success: true, message: 'Backup do banco de dados criado com sucesso.' });
+    });
+});
+
+app.post('/api/database/restore', isAdmin, (req, res) => {
+    const { username } = req.body;
+    const backupFile = path.join(BACKUP_DIR, 'backup.sql.gz');
+    if (!fs.existsSync(backupFile)) {
+        return res.status(400).json({ success: false, message: 'Nenhum arquivo de backup encontrado.' });
+    }
+    const command = `gunzip < ${backupFile} | mysql -h ${DB_HOST} -u ${DB_USER} -p'${DB_PASSWORD}' ${DB_DATABASE}`;
+
+    exec(command, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`Restore failed: ${error}`);
+            return res.status(500).json({ success: false, message: `Erro ao restaurar: ${stderr}` });
+        }
+        logAction(username, 'RESTORE', 'DATABASE', null, 'Database restored from backup.');
+        res.json({ success: true, message: 'Banco de dados restaurado com sucesso.' });
+    });
+});
+
+app.post('/api/database/clear', isAdmin, async (req, res) => {
+    const { username } = req.body;
+    const connection = await db.promise().getConnection();
+    try {
+        await connection.beginTransaction();
+        const [tables] = await connection.query("SHOW TABLES");
+        await connection.query("SET FOREIGN_KEY_CHECKS = 0;");
+        for (const table of tables) {
+            const tableName = Object.values(table)[0];
+            if (tableName !== 'migrations') {
+                await connection.query(`TRUNCATE TABLE \`${tableName}\`;`);
+            }
+        }
+        await connection.query("SET FOREIGN_KEY_CHECKS = 1;");
+        await connection.commit();
+        
+        // Re-run migrations to set up default admin etc.
+        await runMigrations(); 
+
+        logAction(username, 'DELETE', 'DATABASE', 'ALL', 'Cleared all data from the database.');
+        res.json({ success: true, message: 'Todos os dados foram apagados e o sistema foi reinstalado.' });
+
+    } catch (err) {
+        await connection.rollback();
+        res.status(500).json({ success: false, message: `Erro ao limpar banco: ${err.message}` });
+    } finally {
+        connection.release();
+    }
+});
+
+
+// --- Termo Templates ---
+app.get('/api/config/termo-templates', async (req, res) => {
+     try {
+        const [rows] = await db.promise().query("SELECT config_key, config_value FROM app_config WHERE config_key IN ('termo_entrega_template', 'termo_devolucao_template')");
+        const templates = rows.reduce((acc, row) => {
+            const key = row.config_key === 'termo_entrega_template' ? 'entregaTemplate' : 'devolucaoTemplate';
+            acc[key] = row.config_value;
+            return acc;
+        }, {});
+        res.json(templates);
+    } catch (err) {
+        res.status(500).json({ message: "Database error", error: err });
+    }
+});
+
+app.listen(PORT, async () => {
+    try {
+        await runMigrations();
+        console.log(`API server running on port ${PORT}`);
+    } catch (err) {
+        console.error("Failed to start server due to migration error:", err);
+        process.exit(1);
+    }
+});

@@ -58,8 +58,8 @@ const DataConsolidation: React.FC<{ currentUser: User }> = ({ currentUser }) => 
         const result: string[] = [];
         let current = '';
         let inQuote = false;
+        // Handle comma as separator
         const separator = ',';
-
         for (let i = 0; i < line.length; i++) {
             const char = line[i];
             if (char === '"') {
@@ -133,7 +133,7 @@ const DataConsolidation: React.FC<{ currentUser: User }> = ({ currentUser }) => 
                 'NOMEDOUSUÁRIOATUAL': 'usuarioAtual', 'MARCA': 'brand', 'MODELO': 'model',
                 'EMAILDOCOLABORADOR': 'emailColaborador',
                 'IDENTIFICADOR': 'identificador', 'NOMESO': 'nomeSO', 'MEMORIAFISICATOTAL': 'memoriaFisicaTotal', 
-                'GRUPODEPOLITICAS': 'grupoPoliticas', 'PAIS': 'pais', 'CIDADE': 'cidade', 'ESTADOPROVINCIA': 'estadoProvincia'
+                'GRUPODEPOLITICAS': 'grupoPoliticas', 'PAIS': 'pais', 'CIDADE': 'cidade', 'ESTADOPROVÍNCIA': 'estadoProvincia'
             };
 
             const baseData = parseCsv(baseText, baseMappings);

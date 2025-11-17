@@ -159,6 +159,7 @@ const LicenseFormModal: React.FC<{
         observacoes: ''
     });
     const [isSaving, setIsSaving] = useState(false);
+    const [saveError, setSaveError] = useState('');
 
      useEffect(() => {
         if (license) {
@@ -189,6 +190,14 @@ const LicenseFormModal: React.FC<{
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsSaving(true);
+        setSaveError('');
+
+        if (!formData.produto || !formData.chaveSerial || !formData.usuario) {
+            setSaveError('Produto, Chave/Serial e Usuário são campos obrigatórios.');
+            setIsSaving(false);
+            return;
+        }
+
         try {
             if (license) {
                 await updateLicense({ ...formData, id: license.id }, currentUser.username);
@@ -200,8 +209,9 @@ const LicenseFormModal: React.FC<{
             }
             onSave();
             onClose();
-        } catch (error) {
+        } catch (error: any) {
             console.error("Failed to save license", error);
+            setSaveError(error.message || 'Falha ao salvar a licença. Tente novamente.');
         } finally {
             setIsSaving(false);
         }
@@ -214,6 +224,7 @@ const LicenseFormModal: React.FC<{
                     <h3 className="text-xl font-bold text-brand-dark dark:text-dark-text-primary">{license ? 'Editar Licença' : 'Nova Licença'}</h3>
                 </div>
                 <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4 overflow-y-auto">
+                    {saveError && <div className="sm:col-span-2 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{saveError}</div>}
                     <div className="sm:col-span-2">
                          <label className="block text-sm font-medium text-gray-700 dark:text-dark-text-secondary">Produto</label>
                         <select name="produto" value={formData.produto} onChange={handleChange} className="w-full mt-1 p-2 border dark:border-dark-border rounded-md bg-white dark:bg-gray-800">

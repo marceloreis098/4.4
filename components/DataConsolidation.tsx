@@ -91,7 +91,7 @@ const DataConsolidation: React.FC<{ currentUser: User }> = ({ currentUser }) => 
 
             header.forEach((colName, index) => {
                 const normalizedColName = colName.replace(/[\s/]+/g, '').toUpperCase();
-                const mappedKey = mappings[normalizedColName];
+                const mappedKey = mappings[normalizedColName] || mappings[colName.toUpperCase()];
                 if (mappedKey && index < values.length) {
                     (entry as any)[mappedKey] = values[index]?.trim() || '';
                 }
@@ -130,7 +130,7 @@ const DataConsolidation: React.FC<{ currentUser: User }> = ({ currentUser }) => 
 
             const absoluteMappings: { [key: string]: keyof Equipment } = {
                 'NOMEDODISPOSITIVO': 'equipamento', 'NUMERODESERIE': 'serial',
-                'NOMEDOUSUARIOATUAL': 'usuarioAtual', 'MARCA': 'brand', 'MODELO': 'model',
+                'NOMEDOUSUÁRIOATUAL': 'usuarioAtual', 'MARCA': 'brand', 'MODELO': 'model',
                 'EMAILDOCOLABORADOR': 'emailColaborador',
                 'IDENTIFICADOR': 'identificador', 'NOMESO': 'nomeSO', 'MEMORIAFISICATOTAL': 'memoriaFisicaTotal', 
                 'GRUPODEPOLITICAS': 'grupoPoliticas', 'PAIS': 'pais', 'CIDADE': 'cidade', 'ESTADOPROVINCIA': 'estadoProvincia'
